@@ -64,7 +64,6 @@ def get_apt_data():
             history_all = [str(row.get('pipe_status')), str(row.get('elev_status')), p_raw, w_raw]
             has_recent_work = any("202" in s for s in history_all)
 
-            # --- [누님의 최종 필터링 로직] ---
             risk = "mid"
             desc = ""
 
