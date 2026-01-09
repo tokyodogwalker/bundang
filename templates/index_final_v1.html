@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>분당구 관리비 폭탄 판독기</title>
+    <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=c07564458d19d051aead9931c577bc9b&libraries=services,clusterer&autoload=false"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: sans-serif; margin: 0; overflow: hidden; }
+        #map { width: 100%; height: 100vh; }
+        
+        /* UI 오버레이 */
+        .overlay-box { position: absolute; z-index: 50; }
+        
+        /* 타이틀 */
+        .title-container { top: 20px; left: 20px; }
+        .glass-panel { 
+            background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            color: white; border-radius: 16px; padding: 16px;
+        }
+
+        /* 검색창 */
+        .search-container { top: 20px; right: 20px; width: 300px; }
+        .search-input {
+            width: 100%; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.2);
+            color: white; padding: 10px 15px; border-radius: 12px; outline: none; transition: 0.3s;
+        }
+        .search-input:focus { border-color: #3b82f6; background: rgba(0,0,0,0.7); }
+
+        /* 카드 UI */
+        .glass-card-dark { background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(10px); color: white; }
+        .marker-wrapper { position: relative; display: flex; flex-direction: column; align-items: center; cursor: pointer; }
+        .marker-circle { width: 44px; height: 44px; border-radius: 50%; background: #1e293b; display: flex; align-items: center; justify-content: center; font-size: 20px; border: 3px solid #ccc; transition: transform 0.2s; }
+        .marker-circle:hover { transform: scale(1.1); }
+        
+        /* 리스크별 색상 */
+        .marker-leading { border-color: #fbbf24; box-shadow: 0 0 10px #fbbf24; }
+        .marker-remodel { border-color: #a855f7; box-shadow: 0 0 10px #a855f7; }
+        .marker-safe    { border-color: #38bdf8; }
+        .marker-normal  { border-color: #94a3b8; }
+        .marker-high    { border-color: #ef4444; }
+        .marker-low     { border-color: #10b981; } 
+        .marker-mid     { border-color: #475569; }
+        .marker-label { position: absolute; top: 48px; background: rgba(0,0,0,0.8); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; white-space: nowrap; }
+        
+        #detail-card { transition: transform 0.4s; z-index: 1000; }
+        .card-visible { transform: translate(-50%, 0) !important; }
+    </style>
+</head>
+<body class="relative bg-slate-900">
+
+    <div id="map"></div>
+
+    <div class="overlay-box title-container hidden md:block">
+        <div class="glass-panel">
+            <h1 class="text-xl font-bold mb-1">💣 분당구 관리비 폭탄 판독기</h1>
+            <p class="text-xs text-gray-400">K-apt 데이터 기반 추정치입니다.<br>법적 효력이 없으니 참고용으로만 보세요.</p>
+        </div>
+    </div>
+
+    <div class="overlay-box search-container">
+        <div class="relative">
+            <input type="text" id="searchInput" class="search-input" placeholder="아파트 이름 검색..." onkeyup="filterMarkers()">
+            <i class="fa-solid fa-magnifying-glass absolute right-4 top-3.5 text-gray-400"></i>
+        </div>
+    </div>
+
+    <div id="detail-card" class="absolute bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-[400px] translate-y-[150%] transition-transform duration-400 z-[1000]">
+        <div class="glass-card-dark rounded-[32px] p-6 shadow-2xl border border-white/10 bg-slate-900/90 backdrop-blur-md text-white">
+            <div class="flex justify-between items-start mb-4">
+                <div id="card-emoji" class="text-5xl"></div>
+                <button onclick="window.closeCard()" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            <h2 id="card-title" class="text-2xl font-bold mb-2"></h2>
+            <div id="card-badges" class="flex flex-wrap gap-2 mb-6"></div>
+            <div class="grid grid-cols-2 gap-3 mb-6">
+                <div class="bg-white/5 p-4 rounded-2xl text-center border border-white/5">
+                    <p class="text-[11px] text-gray-400 mb-1">장기수선충당금 잔액</p>
+                    <p id="card-balance" class="font-bold text-blue-400 text-lg">-</p>
+                </div>
+                <div class="bg-white/5 p-4 rounded-2xl text-center border border-white/5">
+                    <p class="text-[11px] text-gray-400 mb-1">월 부과액(㎡ 당)</p>
+                    <p id="card-fee" class="font-bold text-white text-lg">-</p>
+                </div>
+            </div>
+            <div id="card-content" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <script>
+        let map;
+        let clusterer;
+        let allApartments = [];
+        let markerPairs = []; // {marker, overlay} 쌍을 저장
+
+        // 투명 이미지 (클러스터링용)
+        const transparentImg = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==";
+
+        window.closeCard = function() {
+            document.getElementById('detail-card').classList.remove('card-visible');
+        }
+
+        kakao.maps.load(function() {
+            const container = document.getElementById('map');
+            const options = { center: new kakao.maps.LatLng(37.382, 127.120), level: 4 };
+            map = new kakao.maps.Map(container, options);
+
+            // 1. 클러스터러 생성
+            clusterer = new kakao.maps.MarkerClusterer({
+                map: map,
+                averageCenter: true,
+                minLevel: 5 // 이 레벨보다 줌 아웃하면 뭉칩니다
+            });
+
+            // 데이터 불러오기
+            fetch('/api/data')
+                .then(res => res.json())
+                .then(data => {
+                    allApartments = data;
+                    renderMarkers(allApartments);
+                });
+            
+            // ★ 핵심 로직: 지도가 움직이거나 줌 될 때마다 "흩어진 마커"만 예쁜 마커 보여주기
+            kakao.maps.event.addListener(map, 'idle', updateOverlays);
+            kakao.maps.event.addListener(map, 'click', window.closeCard);
+        });
+
+        // "투명 인간 작전" 실행 함수
+        function updateOverlays() {
+            markerPairs.forEach(pair => {
+                // marker.getMap()이 있으면(=지도에 핀이 보이면), 예쁜 마커(overlay)도 켠다.
+                // 클러스터에 먹히면 marker.getMap()은 null이 됩니다.
+                if (pair.marker.getMap()) {
+                    pair.overlay.setMap(map);
+                } else {
+                    pair.overlay.setMap(null);
+                }
+            });
+        }
+
+        function renderMarkers(apartments) {
+            // 기존 거 싹 지우기
+            clusterer.clear();
+            markerPairs.forEach(pair => pair.overlay.setMap(null));
+            markerPairs = [];
+
+            const markers = [];
+
+            apartments.forEach(apt => {
+                const position = new kakao.maps.LatLng(apt.lat, apt.lng);
+
+                // 1. 예쁜 마커 (CustomOverlay) - 일단 숨겨둠(setMap null)
+                const content = document.createElement('div');
+                content.className = 'marker-wrapper';
+                content.innerHTML = `<div class="marker-circle marker-${apt.risk}">${getEmoji(apt)}</div><span class="marker-label">${apt.name}</span>`;
+                content.onclick = () => openCard(apt); // 예쁜 마커 누르면 카드 열림
+
+                const overlay = new kakao.maps.CustomOverlay({
+                    position: position,
+                    content: content,
+                    yAnchor: 1,
+                    clickable: true
+                });
+
+                // 2. 투명 마커 (Marker) - 클러스터링을 위한 희생양
+                const markerImage = new kakao.maps.MarkerImage(transparentImg, new kakao.maps.Size(1, 1));
+                const marker = new kakao.maps.Marker({ position: position, image: markerImage });
+
+                // 투명 마커를 눌러도 카드가 열리게 연결
+                kakao.maps.event.addListener(marker, 'click', () => openCard(apt));
+
+                markers.push(marker);
+                markerPairs.push({ marker: marker, overlay: overlay });
+            });
+
+            // 클러스터러에 투명 마커들 등록
+            clusterer.addMarkers(markers);
+            
+            // 최초 1회 동기화
+            updateOverlays();
+        }
+
+        function filterMarkers() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) { renderMarkers(allApartments); return; }
+            const filtered = allApartments.filter(apt => apt.name.includes(query));
+            renderMarkers(filtered);
+        }
+
+        function getEmoji(apt) {
+            const emojis = { leading:'🏆', remodel:'🚧', safe:'✨', normal:'🙂', high:'😡', low:'🛡️' };
+            return emojis[apt.risk] || '🤔';
+        }
+
+        function openCard(apt) {
+            document.getElementById('card-title').innerText = apt.name;
+            document.getElementById('card-emoji').innerText = getEmoji(apt);
+            document.getElementById('card-balance').innerText = apt.balance;
+            document.getElementById('card-fee').innerText = apt.fee;
+            
+            let badgesHtml = `<span class="bg-slate-700 px-3 py-1 rounded-full text-xs font-medium text-white">${apt.age}년차</span>`;
+            if (apt.is_leading) badgesHtml += `<span class="ml-2 bg-yellow-500/20 text-yellow-300 border border-yellow-500/50 px-3 py-1 rounded-full text-xs font-bold">🏆 선도지구</span>`;
+            else if (apt.is_special) badgesHtml += `<span class="ml-2 bg-purple-500/20 text-purple-300 border border-purple-500/50 px-3 py-1 rounded-full text-xs">✨ 특별정비구역</span>`;
+            document.getElementById('card-badges').innerHTML = badgesHtml;
+
+            const history = apt.history || { pipe: '-', elev: '-', paint_water: '-' };
+            const goodKeys = ['교체', '전면', '전체', '202'];
+            const checkColor = (text) => {
+                const s = String(text);
+                if (s === '-' || !s) return 'text-gray-500';
+                if (goodKeys.some(key => s.includes(key))) return 'text-blue-400 font-bold';
+                return 'text-gray-400';
+            };
+            const boxClass = apt.risk === 'high' ? 'bg-red-500/10 border-red-500/20' : 'bg-blue-500/10 border-blue-500/20';
+            const contentHtml = `
+                <div class="bg-white/5 rounded-2xl p-4 border border-white/5">
+                    <h4 class="text-xs text-gray-400 font-bold mb-3 flex items-center"><i class="fa-solid fa-clipboard-check mr-2"></i>주요 시설 상태 (최근 5년)</h4>
+                    <div class="space-y-3 text-sm">
+                        <div class="flex justify-between items-center"><div class="flex items-center text-gray-300"><i class="fa-solid fa-elevator w-5 text-center mr-2 opacity-70"></i> 승강기</div><span class="${checkColor(history.elev)}">${history.elev}</span></div>
+                        <div class="flex justify-between items-center"><div class="flex items-center text-gray-300"><i class="fa-solid fa-faucet w-5 text-center mr-2 opacity-70"></i> 배관/난방</div><span class="${checkColor(history.pipe)}">${history.pipe}</span></div>
+                        <div class="flex justify-between items-center"><div class="flex items-center text-gray-300"><i class="fa-solid fa-fill-drip w-5 text-center mr-2 opacity-70"></i> 도색/방수</div><span class="font-bold ${String(history.paint_water) !== '-' ? 'text-blue-400' : 'text-gray-500'}">${history.paint_water}</span></div>
+                    </div>
+                </div>
+                <div class="p-4 rounded-2xl ${boxClass} border text-gray-300 text-xs leading-relaxed mt-4">${apt.desc}</div>
+            `;
+            document.getElementById('card-content').innerHTML = contentHtml;
+            document.getElementById('detail-card').classList.add('card-visible');
+        }
+    </script>
+</body>
+</html>
